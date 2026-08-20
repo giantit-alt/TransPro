@@ -498,6 +498,9 @@ input::placeholder{color:var(--muted);}
 <div class="toast" id="toast"></div>
 
 <script>
+// ── API URL ──
+const API_URL = "https://script.google.com/macros/s/AKfycbzOFCaRk6Dw6UVFBcgGUUMId9rWrPrQU-PALnab2sA1A05BU2HgX1Z2lWNSuwGznWM-/exec";
+
 // ── STATE ──
 var masterData = [];
 var currentInvoiceItems = [];
@@ -524,30 +527,26 @@ function playOver(){ try{ document.getElementById('sndOver').cloneNode().play();
 window.onload = function(){
   document.getElementById('invDate').valueAsDate = new Date();
   initDashFilters();
-  google.script.run.withSuccessHandler(function(r){
-    if(r.ok){ masterData = r.list; populateCustomerDropdown(); }
-  }).getMasterData();
+  
+  // เรียกข้อมูล Master Data ตอนเปิดหน้าเว็บ
+  fetch(API_URL + "?action=getMasterData")
+    .then(res => res.json())
+    .then(r => {
+      if(r.ok){ masterData = r.list; populateCustomerDropdown(); }
+    }).catch(e => console.error("Error loading master data:", e));
 };
 
 // ── MENU TOGGLE (PC & MOBILE) ──
 function toggleMenu() {
   if (window.innerWidth <= 768) {
-    // พฤติกรรมบนมือถือ: เลื่อนเมนูออกมาทับหน้าจอ + โชว์ Overlay สีดำ
     document.getElementById('sidebar').classList.toggle('open');
     document.getElementById('mobileOverlay').classList.toggle('show');
   } else {
-    // พฤติกรรมบน PC: หดเมนูเก็บไปด้านซ้าย เพื่อขยายพื้นที่เนื้อหา
     document.getElementById('sidebar').classList.toggle('collapsed');
   }
 }
 
 // ── NAVIGATION ──
-var pageTitles = {
-  dash:'แดชบอร์ดสรุปการจัดส่ง',
-  create:'สร้างแผนจัดส่ง (Invoice)',
-  scan:'สแกน QC'
-};
-
 function switchPage(page){
   ['dash','create','scan'].forEach(function(p){
     document.getElementById('page-'+p).classList.remove('active');
@@ -556,7 +555,6 @@ function switchPage(page){
   document.getElementById('page-'+page).classList.add('active');
   document.getElementById('nav-'+page).classList.add('active');
 
-  // ปิดเมนูอัตโนมัติบนมือถือ
   if (window.innerWidth <= 768) {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('mobileOverlay').classList.remove('show');
@@ -672,34 +670,52 @@ function renderInvoicePreview(){
 
 function removePart(idx){currentInvoiceItems.splice(idx,1);renderInvoicePreview();}
 
+// ── SAVE INVOICE API ──
 function saveInvoice(){
   var invNo=buildInvNo();
   if(!invNo){showToast('กรุณาระบุวันที่และลำดับบิล',true);return;}
   var ds=document.getElementById('invDate').value;
   var cust=document.getElementById('invCustomer').value;
   if(!cust||!currentInvoiceItems.length){showToast('กรุณากรอกข้อมูลให้ครบ',true);return;}
-  google.script.run
-    .withSuccessHandler(function(r){
-      if(r.ok){showToast('บันทึกแผนจัดส่ง '+invNo+' เรียบร้อย');document.getElementById('invSeq').value='';updateInvPreview();currentInvoiceItems=[];renderInvoicePreview();}
-      else showToast('Error: '+r.error,true);
-    })
-    .withFailureHandler(function(e){showToast('Error: '+e.message,true);})
-    .saveInvoiceTarget({invoiceNo:invNo,deliveryDate:formatDateBE(ds),customer:cust,items:currentInvoiceItems});
+  
+  var payload = {
+    action: 'saveInvoiceTarget',
+    data: {invoiceNo:invNo, deliveryDate:formatDateBE(ds), customer:cust, items:currentInvoiceItems}
+  };
+
+  fetch(API_URL, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  .then(res => res.json())
+  .then(r => {
+    if(r.ok){
+      showToast('บันทึกแผนจัดส่ง '+invNo+' เรียบร้อย');
+      document.getElementById('invSeq').value='';
+      updateInvPreview();
+      currentInvoiceItems=[];
+      renderInvoicePreview();
+    } else {
+      showToast('Error: '+r.error,true);
+    }
+  })
+  .catch(e => showToast('Error: '+e.message,true));
 }
 
-// ── SCAN ──
+// ── SCAN API ──
 function loadActiveCustomersForScan(){
   var sel=document.getElementById('scanCustSelect');
   sel.innerHTML='<option value="">กำลังโหลด...</option>';
-  google.script.run
-    .withSuccessHandler(function(r){
+  
+  fetch(API_URL + "?action=getActiveCustomersForScan")
+    .then(res => res.json())
+    .then(r => {
       if(!r.ok){sel.innerHTML='<option value="">โหลดไม่สำเร็จ</option>';return;}
       allCustomersForScan=r.customers;
       sel.innerHTML='<option value="">-- เลือกลูกค้า --</option>';
       r.customers.forEach(function(c){sel.innerHTML+='<option value="'+c.customer+'">'+c.customer+'</option>';});
     })
-    .withFailureHandler(function(){sel.innerHTML='<option value="">Error</option>';})
-    .getActiveCustomersForScan();
+    .catch(() => { sel.innerHTML='<option value="">Error</option>'; });
 }
 
 function loadCustomerForScan(){
@@ -714,8 +730,10 @@ function loadCustomerForScan(){
     activeScanMap[item.tagpack]={targetQty:item.targetQty,scannedQty:0,tags:[],partName:item.partName,invoiceNos:item.invoiceNos||[]};
   });
   document.getElementById('scanProgressList').innerHTML='<div style="text-align:center;padding:20px;"><span class="spin"></span></div>';
-  google.script.run
-    .withSuccessHandler(function(r){
+  
+  fetch(API_URL + "?action=getScanHistoryByCustomer&customer=" + encodeURIComponent(name))
+    .then(res => res.json())
+    .then(r => {
       if(r.ok){
         r.logs.forEach(function(log){
           if(activeScanMap[log.tagpack]){
@@ -727,8 +745,7 @@ function loadCustomerForScan(){
         setTimeout(function(){document.getElementById('qrInput').focus();},100);
       }
     })
-    .withFailureHandler(function(){renderScanProgress();})
-    .getScanHistoryByCustomer(name);
+    .catch(() => renderScanProgress());
 }
 
 function renderScanProgress(){
@@ -784,9 +801,11 @@ function processScanData(qrData){
   if(map.tags.indexOf(seq)>=0){playDup();setFeedback('⚠️ '+tagpack+' แท็ก #'+seq+' สแกนไปแล้ว (ข้าม)','warn');setTimeout(function(){document.getElementById('qrInput').focus();},50);return;}
   var remaining=map.targetQty-map.scannedQty;
   if(qty>remaining){playOver();setFeedback('🚫 บล็อก! '+tagpack+' มี '+qty+' ชิ้น แต่รับได้อีก '+remaining+' ชิ้น','err');setTimeout(function(){document.getElementById('qrInput').focus();},50);return;}
+  
   map.tags.push(seq);
   map.scannedQty+=qty;
   var isDone=map.scannedQty===map.targetQty;
+  
   if(isDone){
     playComplete();
     setFeedback('✅ '+tagpack+' ครบแล้ว! ('+map.scannedQty.toLocaleString('th-TH')+'/'+map.targetQty.toLocaleString('th-TH')+')', 'ok');
@@ -795,14 +814,35 @@ function processScanData(qrData){
     setFeedback('✓ '+tagpack+' [Lot:'+lotNo+'] #'+seq+' — '+map.scannedQty.toLocaleString('th-TH')+'/'+map.targetQty.toLocaleString('th-TH')+' (ขาด '+(map.targetQty-map.scannedQty)+')', 'ok');
   }
   renderScanProgress();
-  google.script.run
-    .withSuccessHandler(function(){})
-    .withFailureHandler(function(e){showToast('⚠️ บันทึกไม่สำเร็จ: '+e.message,true);})
-    .saveScanLog({customer:activeCustomer.customer,invoiceNo:map.invoiceNos?map.invoiceNos.join(','):'',tagpack:tagpack,tagCustomer:tagCustomer,lotNo:lotNo,qty:qty,seq:seq,scannedQtyTotal:map.scannedQty,targetQty:map.targetQty,status:isDone?'OK':'SHORT'});
+  
+  // บันทึกผลการสแกนไปที่ API
+  var payload = {
+    action: 'saveScanLog',
+    data: {
+      customer: activeCustomer.customer,
+      invoiceNo: map.invoiceNos ? map.invoiceNos.join(',') : '',
+      tagpack: tagpack,
+      tagCustomer: tagCustomer,
+      lotNo: lotNo,
+      qty: qty,
+      seq: seq,
+      scannedQtyTotal: map.scannedQty,
+      targetQty: map.targetQty,
+      status: isDone ? 'OK' : 'SHORT'
+    }
+  };
+  
+  fetch(API_URL, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+  .then(res => res.json())
+  .catch(e => showToast('⚠️ บันทึกไม่สำเร็จ: '+e.message,true));
+  
   setTimeout(function(){document.getElementById('qrInput').focus();},50);
 }
 
-// ── DASHBOARD ──
+// ── DASHBOARD API ──
 function initDashFilters(){
   var today=new Date(),y=today.getFullYear(),m=today.getMonth(),d=today.getDate();
   document.getElementById('dashFrom').value=y+'-'+('0'+(m+1)).slice(-2)+'-01';
@@ -812,15 +852,19 @@ function initDashFilters(){
 function loadDashboard(){
   var tbody=document.getElementById('dashTbody');
   tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:28px;"><span class="spin"></span> <span style="margin-left:8px;color:var(--muted);">กำลังโหลด...</span></td></tr>';
-  google.script.run
-    .withSuccessHandler(function(r){
+  
+  var dFrom = document.getElementById('dashFrom').value;
+  var dTo = document.getElementById('dashTo').value;
+  
+  fetch(API_URL + "?action=getDashboardData&dateFrom=" + dFrom + "&dateTo=" + dTo)
+    .then(res => res.json())
+    .then(r => {
       if(!r.ok){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--red);padding:20px;">'+r.error+'</td></tr>';return;}
       dashRawData=r;
       populateDashCustFilter(r.rows);
       renderDashboard();
     })
-    .withFailureHandler(function(e){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--red);padding:20px;">'+e.message+'</td></tr>';})
-    .getDashboardData(document.getElementById('dashFrom').value,document.getElementById('dashTo').value);
+    .catch(e => {tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--red);padding:20px;">'+e.message+'</td></tr>';});
 }
 
 function populateDashCustFilter(rows){
